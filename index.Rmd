@@ -46,93 +46,209 @@ class_diag <- function(score, truth, positive, cutoff=.5){
 
 # Mining, Classification, Prediction
 
-## Name and EID here
+## Jessica Chavarria, jc86585
 
 ### Introduction 
 
-Paragraph or two introducing your datasets and variables, why they are interesting to you, etc. See instructions for more information
+For this project, I decided to branch out and use the MedGPA dataset from the Stat2Data package in R. This dataset contains 11 variables in total, including medical school admission status ("Accept" and "Acceptance"), sex, Bio/Chem/Physics/Math GPA ("BCPM"), college GPA ("GPA"), verbal reasoning subscore ("VR"), physical sciences subscore ("PS"), writing sample subscore ("WS"), biological sciences subscore ("BS"), total score on the MCAT ("MCAT"), and the number of medical schools applied to ("Apps"). There were a total of 55 observations in the original dataset. However, this project utilizes a version of the dataset with NAs removed, resulting in 54 total observations. Among all applicants, 30 were admitted into medical school while 24 were denied admission. This dataset initially caught my attention because I was actually a pre-med student coming in as a freshman to UT. I thought it would be interesting to analyze GPA and MCAT scores against medical school admission decisions to see if I could find any surprising trends.
 
 ```{R}
 library(tidyverse)
-# read your datasets in here, e.g., with read_csv()
-
-# if your dataset needs tidying, do so here
-
-# any other code here
+data <- read.csv("~/Documents/project2/MedGPA.csv")
 ```
 
 ### Cluster Analysis
 
 ```{R}
 library(cluster)
-# clustering code here
+
+##adjusting data for kmeans()
+data_omit <- na.omit(data)
+clust_dat <- data_omit %>% select(BCPM, GPA, VR, PS, WS, BS, MCAT, Apps)
+
+##finding k
+sil_width <- vector()
+for(i in 2:10){  
+  kms <- clust_dat %>% scale %>% kmeans(centers = i)
+  ##kmeans(clust_dat, centers = i)
+  sil <- silhouette(kms$cluster, dist(clust_dat))
+  sil_width[i] <- mean(sil[,3])
+}
+ggplot() + geom_line(aes(x = 1:10, y = sil_width)) + 
+  scale_x_continuous(name = "k", breaks=1:10)
+##k=2
+
+##pam
+pam1 <- clust_dat %>% pam(k=2)
+library(GGally)
+data_omit %>% mutate(cluster=as.factor(pam1$clustering)) %>% 
+ggpairs(columns = c("BCPM","GPA","VR","PS","WS","BS","MCAT","Apps"), aes(color=cluster))
+
+##averages by cluster group
+pamclust <- clust_dat %>% mutate(cluster=as.factor(pam1$clustering))
+pamclust %>% group_by(cluster) %>% summarize_if(is.numeric,mean,na.rm=T)
+
+##final medoids
+data %>% slice(pam1$id.med)
+
+##goodness of fit
+plot(pam1, which=2)
+
+plot(pam1, which=1)
 ```
 
-Discussion of clustering here
+Surprisingly, both clusters demonstrate a lot of overlap with each other across all variables except for the number of medical schools applied to ("Apps"). In the graph generated with ggpairs, Cluster 2 (blue) included applicants who applied to approximately twice as many medical schools as those in Cluster 1 (red). The variables which most strongly correlated with each other in both clusters were college GPA and BCPM (Bio/Chem/Physics/Math) GPA. However, it's also interesting to note that applicants' MCAT scores and college/BCPM GPA correlated most strongly in Cluster 1, while Cluster 2 had the strongest association between MCAT scores and Writing Sample (WS) MCAT subscores. When averaged are calculated by cluster group, both clusters perform very similarly, although Cluster 2 (M = 13) has a much greater "Apps" average than Cluster 1 (M = 5.25).
+
+The two final medoids were also very similar to each other in terms of GPA and MCAT scores, although the one for Cluster 2 applied to 12 medical schools while the one for Cluster 1 applied to only 5. Both were still admitted into medical school. Based on the rule-of-thumb thresholds described in class, the final fit of the cluster solution is weak.
     
     
 ### Dimensionality Reduction with PCA
 
 ```{R}
-# PCA code here
+data2 <- data_omit %>% select(5:12, Accept)
+data_nums <- data2 %>% select_if(is.numeric) %>% scale
+dataPCA <- princomp(data_nums)
+summary(dataPCA, loadings=T)
+
+datadf <- data.frame(Name = data_omit$X, 
+                     PC1 = dataPCA$scores[,1], 
+                     PC2 = dataPCA$scores[,2])
+
+##PCA plot
+ggplot(datadf, aes(PC1, PC2, color=data_omit$Accept)) + geom_point()
 ```
 
-Discussions of PCA here. 
+For my selected dataset, PC1 can be interpreted as the overall strength of an individual applicant. Applicants who score high on PC1 demonstrate higher GPA, higher Bio/Chem/Physics/Math (BCPM) GPA, and higher overall MCAT scores (including subscores). Those who score low on PC1 have weaker grades overall. PC2 describes a trade-off between BCPM GPA and an applicant's score on the Writing sample (WS) portion of the MCAT. Higher scores in PC2 reflect higher BCPM GPA but low WS scores. Likewise, lower scores in PC2 reflect lower BCPM GPA but higher WS scores. About 61.54% of the total variance in this dataset can be explained by both principal components.
+
+I also thought it would be interesting to see if there was any relationship between admission decisions ("Accept") and scores on both PC1 and PC2 on the plot. Perhaps unsurprisingly, those who scored higher on PC1 were more likely to be admitted (A) into medical school while those who scored lower were more likely to be denied (D). However, there doesn't seem to be any relationship between PC2 and admission decisions.
 
 ###  Linear Classifier
 
 ```{R}
-# linear classifier code here
+##logistic regression
+fit <- glm(Acceptance ~ BCPM + GPA + VR + PS + WS + BS + MCAT + Apps, 
+           data=data_omit, 
+           family="binomial")
+score <- predict(fit, type="response")
+class_diag(score, data_omit$Acceptance, positive=1)
+table(truth = data_omit$Acceptance, predictions = score > .5)
 ```
 
 ```{R}
-# cross-validation of linear classifier here
+##cross-validation: k-fold CV
+set.seed(1234)
+k=10
+
+data3 <- data_omit[sample(nrow(data_omit)),]
+folds <- cut(seq(1:nrow(data_omit)),breaks=k,labels=F)
+diags <- NULL
+for(i in 1:k){
+  train <- data3[folds!=i,] 
+  test <- data3[folds==i,]
+  truth <- test$Acceptance
+  fit <- glm(Acceptance ~ BCPM + GPA + VR + PS + WS + BS + MCAT + Apps, data=train, family="binomial")
+  probs <- predict(fit,newdata = test,type="response")
+  diags <- rbind(diags,class_diag(probs,truth, positive=1))
+}
+
+summarize_all(diags, mean)
 ```
 
-Discussion here
+When predicting admission decisions ("Acceptance") from all numerical variables in the data set (GPA, total MCAT score, all MCAT subscores, BCPM GPA), the model did great in-sample, as shown by the 0.9417 AUC. However, cross-validation performance was a bit poorer at 0.89111 AUC. Since the decrease from in-sample to out of sample performance wasn't too huge, the model does not seem to significant show signs of overfitting.
 
 ### Non-Parametric Classifier
 
 ```{R}
 library(caret)
-# non-parametric classifier code here
+knn_fit <- knn3(Acceptance==1 ~ BCPM + GPA + VR + PS + WS + BS + MCAT + Apps, 
+           data=data_omit)
+prob_knn <- predict(knn_fit, newdata=data_omit)[,2]
+class_diag(prob_knn, data_omit$Acceptance, positive=1)
+table(truth = data_omit$Acceptance, predictions = prob_knn > .5)
 ```
 
 ```{R}
-# cross-validation of np classifier here
+##cross-validation of np classifier
+set.seed(322)
+k=10
+
+data4 <- sample_frac(data_omit)
+folds <- rep(1:k, length.out=nrow(data4))
+
+diags <- NULL
+
+i=1
+for(i in 1:k){
+train <- data4[folds!=i,] 
+test <- data4[folds==i,] 
+truth <- test$Acceptance
+
+fit <- knn3(Acceptance==1 ~ BCPM + GPA + VR + PS + WS + BS + MCAT + Apps, 
+           data=train)
+
+probs <- predict(fit, newdata = test)[,2]
+
+diags <- rbind(diags, class_diag(probs,truth,positive = 1)) }
+
+summarize_all(diags,mean)
 ```
 
-Discussion
+With kNN, the model was good at predicting admissions in-sample based on test scores and GPAs (AUC = 0.8535). However, there was a pretty sizable dip in performance out of sample with new observations (AUC = 0.77708), which may indicate signs of overfitting. When comparing the logistic regression model with kNN, the former model outperformed the latter in cross-validation performance.
 
 
 ### Regression/Numeric Prediction
 
 ```{R}
-# regression model code here
+##regression model code
+fit <- lm(Apps ~ GPA + MCAT, data=data_omit)
+yhat <- predict(fit)
+
+##mse
+mean((data_omit$Apps-yhat)^2)
 ```
 
 ```{R}
-# cross-validation of regression model here
+##cross-validation of regression model
+set.seed(1234)
+k=10
+
+data5 <- data_omit[sample(nrow(data_omit)),]
+folds <- cut(seq(1:nrow(data_omit)),breaks=k,labels=F)
+diags <- NULL
+for(i in 1:k){
+  train <- data5[folds!=i,]
+  test <- data5[folds==i,]
+  fit <- lm(Apps ~ GPA + MCAT, data=train)
+  yhat <- predict(fit, newdata=test)
+  diags <- mean((test$Apps-yhat)^2) 
+}
+
+##average mse
+mean(diags)
 ```
 
-Discussion
+Within the linear regression, I attempted to see if the number of medical schools applied to could be predicted by MCAT scores and college GPA. The mean squared error was slightly higher in cross-validation, which may indicate signs of overfitting. Regardless, the large MSE value that resulted from both the linear regression and the CV may implicate that the number of medical school applications made by a student has no relation to their MCAT score and GPA and therefore cannot be predicted from these variables alone.
 
 ### Python 
 
 ```{R}
 library(reticulate)
+subMCAT <- data_omit %>% select(VR, PS, WS, BS)
 ```
 
 ```{python}
-# python code here
+VR=r.subMCAT['VR']
+PS=r.subMCAT['PS']
+WS=r.subMCAT['WS']
+BS=r.subMCAT['BS']
+zipped_lists = zip(VR, PS, WS, BS)
+totMCAT = [w+x+y+z for w, x, y, z in zip(VR, PS, WS, BS)]
 ```
 
-Discussion
+```{R}
+py$totMCAT
+identical(py$totMCAT, data_omit$MCAT)
+```
 
-### Concluding Remarks
-
-Include concluding remarks here, if any
-
-
-
+In this demonstration, I took the MCAT subscores from the full dataset and saved them onto the object "subMCAT" to later add them all together in python. Once completed, I called the total MCAT score calculated in python ("totMCAT") in the identical() function in R to compare it to the original MCAT totals reported in the dataset. Both lists ended up being exactly the same.
 
